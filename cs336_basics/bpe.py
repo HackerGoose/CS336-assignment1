@@ -1,6 +1,6 @@
 import os
 import regex as re
-from pretokenization_example import find_chunk_boundaries
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 from collections import Counter
 
 # Goose is using a Trie data structure to store vocabulary
@@ -22,7 +22,7 @@ def insert(root, bytes, token):
     root.size += 1
 
 # find the shortest possible sequence of tokens, given a bytestring
-def encode(root, bytestr):
+def find(root, bytestr):
     result_tokens = []
     node = root
     cur_token = -1
@@ -48,9 +48,9 @@ def bpe_example(corpus):
     # Build a Trie with the default vocabulary
     byte_map = {bytes([i]): i for i in range(256)}
     trie_root = TrieNode()
-    decoder = {}
+    token_id_to_bytes = {}
     for byte, token in byte_map.items():
-        decoder[token] = byte
+        token_id_to_bytes[token] = byte
         insert(trie_root, byte, token)
 
     j = 0
@@ -59,7 +59,7 @@ def bpe_example(corpus):
         words_corpus = corpus.split(" ")
         pre_tokenize_corpus_dict = {}
         for words in words_corpus:
-            pre_tokenize_words = tuple(encode(trie_root, words.encode("utf-8")))
+            pre_tokenize_words = tuple(find(trie_root, words.encode("utf-8")))
             if pre_tokenize_words not in pre_tokenize_corpus_dict:
                 pre_tokenize_corpus_dict[pre_tokenize_words] = 1
             else:
@@ -80,11 +80,11 @@ def bpe_example(corpus):
         # lexicographically decide what to merge
         k, v = max(token_dict.items(), key=lambda kv: (kv[1], kv[0]))
         new_token = trie_root.size
-        k_in_bytestr = decoder[k[0]] + decoder[k[1]]
+        k_in_bytestr = token_id_to_bytes[k[0]] + token_id_to_bytes[k[1]]
         print("merging", k, "which means", k_in_bytestr, "as a new token", new_token)
         # merge: update pre_tokenize_corpus_dict's key
         insert(trie_root, k_in_bytestr, new_token)
-        decoder[new_token] = k_in_bytestr
+        token_id_to_bytes[new_token] = k_in_bytestr
         j += 1
 
 """
@@ -119,25 +119,28 @@ def train_bpe(
     
     if vocab_size < 256:
         raise Exception("Vocabulary size too small")
+    
+    merges = []
    
     # Build a Trie with the default vocabulary
     byte_map = {bytes([i]): i for i in range(256)}
     trie_root = TrieNode()
-    decoder = {}
+    token_id_to_bytes = {}
     for byte, token in byte_map.items():
-        decoder[token] = byte
+        token_id_to_bytes[token] = byte
         insert(trie_root, byte, token)
 
     # Process special tokens
     for special_token in special_tokens:
         new_token = trie_root.size
         new_bytestr = special_token.encode("utf-8")
+        token_id_to_bytes[new_token] = new_bytestr
         insert(trie_root, new_bytestr, new_token)
 
     # Pretokenize this thing
     PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     PAT_NOSPECIAL = "|".join(map(re.escape, special_tokens))
-    pretokens = Counter()
+    pretokens_freq_map = Counter()
     with open(input_path, "rb") as f:
         num_processes = 4
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
@@ -152,54 +155,95 @@ def train_bpe(
             for chunk_part in chunk_parts:
                 # Run pre-tokenization on your chunk and store the counts for each pre-token
                 for m in re.finditer(PAT, chunk_part):
-                    pretokens[m.group().encode("utf-8")] += 1
-        print(pretokens.most_common(20))
+                    pretokens_freq_map[tuple(m.group().encode("utf-8"))] += 1
+        # print("pretokens_freq_map:", pretokens_freq_map.most_common(20))
     
     # Now we have a bytestring frequency map, we need to create byte pair count
-    # 
-    return
+    byte_pair_freq_map = Counter()
+    for k,v in pretokens_freq_map.items():
+        for i in range(0, len(k)-1):
+            pair_of_bytes = tuple([k[i], k[i+1]])
+            byte_pair_freq_map[pair_of_bytes] += v        
+
+    # iteration begins here
     j = trie_root.size
     while j < vocab_size:
-        # iteration begins here
-
-        # Course grain pre-tokenize the corpus
-        words_corpus = corpus.split(" ")
-        pre_tokenize_corpus_dict = {}
-        for words in words_corpus:
-            pre_tokenize_words = tuple(encode(trie_root, words.encode("utf-8")))
-            if pre_tokenize_words not in pre_tokenize_corpus_dict:
-                pre_tokenize_corpus_dict[pre_tokenize_words] = 1
-            else:
-                pre_tokenize_corpus_dict[pre_tokenize_words] += 1
-
-        # we start with only 256 tokens, each of them can be represented as an integer value (0,256),
-        # any additional tokens are stored in here。
-        # I should create a trie to do this. So that when I tokenize my input, it will be a lot faster.
-
-        token_dict = {}
-        for k,v in pre_tokenize_corpus_dict.items():
-            for i in range(0, len(k)-1):
-                pair_of_bytes = tuple([k[i], k[i+1]])
-                if pair_of_bytes not in token_dict:
-                    token_dict[pair_of_bytes] = v
-                else:
-                    token_dict[pair_of_bytes] += v
-        print(token_dict)
         # lexicographically decide what to merge
-        k, v = max(token_dict.items(), key=lambda kv: (kv[1], kv[0]))
+        k, v = max(
+            byte_pair_freq_map.items(),
+            key=lambda kv: (
+                kv[1], # freq
+                (token_id_to_bytes[kv[0][0]], token_id_to_bytes[kv[0][1]])  # bytes pair
+            )
+        )
+
+        # do merge here, add new token to encoder trie, token_id_to_bytes map
         new_token = trie_root.size
-        k_in_bytestr = decoder[k[0]] + decoder[k[1]]
-        print("merging", k, "which means", k_in_bytestr, "as a new token", new_token)
-        # merge: update pre_tokenize_corpus_dict's key
+        k_in_bytestr = token_id_to_bytes[k[0]] + token_id_to_bytes[k[1]]
+        # print("merging", k, "which means", k_in_bytestr, "as a new token", new_token)
+        merges.append((token_id_to_bytes[k[0]], token_id_to_bytes[k[1]]))
         insert(trie_root, k_in_bytestr, new_token)
-        decoder[new_token] = k_in_bytestr
+        token_id_to_bytes[new_token] = k_in_bytestr
+
+        # pop the count of this pair from pair in byte_pair_freq_map
+        byte_pair_freq_map.pop(k, None)
+
+        # update pretokens_freq_map & byte_pair_freq_map
+        # which pretoken and pairs are affected? 
+        for pretoken, freq in list(pretokens_freq_map.items()):
+            updated_pretoken = []
+            merged = False
+            i = 0
+            while i < len(pretoken):
+                if (i < len(pretoken) - 1) and pretoken[i] == k[0] and pretoken[i+1] == k[1]:
+                    # found, dont worry about (k1, k2) pair in byte_pair_freq_map
+
+                    # front pair needs to be updated
+                    if (i > 0):
+                        byte_pair_freq_map[(pretoken[i-1], pretoken[i])] -= freq
+                        byte_pair_freq_map[(pretoken[i-1], new_token)] += freq
+
+                    # back pair needs to be updated
+                    if (i + 2 < len(pretoken)):
+                        byte_pair_freq_map[(pretoken[i+1], pretoken[i+2])] -= freq
+                        byte_pair_freq_map[(new_token, pretoken[i+2])] += freq
+
+                    updated_pretoken.append(new_token)
+                    i += 2
+                    merged = True
+                else:
+                    updated_pretoken.append(pretoken[i])
+                    i += 1  
+            if merged:
+                # print("updating", pretoken, "to", updated_pretoken)
+                pretokens_freq_map[tuple(updated_pretoken)] += pretokens_freq_map.pop(pretoken)
         j += 1
+
+    return (token_id_to_bytes, merges)
+
+
+"""
+    Section 2.6.2 code begins here
+    From last section, we trained (1) token_id_to_bytes_mapping (2) merges
+    In this section, we want to provide a interface for encoding and decoding
+"""
+# class Tokenizer:
+#     def __init__(self, vocab, merges, special_tokens=None):
+#         pass
+#     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
+#         pass
+#     def encode(self, text: str) -> list[int]:
+#         pass
+#     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+#         pass
+#     def decode(self, ids: list[int]):
+#         pass
 
 
 def main():
     """Main entry point of the program."""
     # bpe_example("low low low low low lower lower widest widest widest newest newest newest newest newest newest")
-    train_bpe("data/TinyStoriesV2-GPT4-valid.txt", 280, ["<|endoftext|>"])
+    train_bpe("data/TinyStoriesV2-GPT4-valid.txt", 500, ["<|endoftext|>"])
 
 if __name__ == "__main__":
     main()

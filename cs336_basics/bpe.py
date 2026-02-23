@@ -3,9 +3,11 @@ import regex as re
 from cs336_basics.pretokenization_example import find_chunk_boundaries
 from collections import Counter
 from typing import Iterable, Iterator
+import math
 import json
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
 
 # Goose is using a Trie data structure to store vocabulary
 class TrieNode:
@@ -105,6 +107,8 @@ def bpe_example(corpus):
         insert(trie_root, k_in_bytestr, new_token)
         token_id_to_bytes[new_token] = k_in_bytestr
         j += 1
+
+
 
 """
     Section 2.6 code begins here
@@ -243,33 +247,47 @@ def train_bpe(
 """
 class Tokenizer:
     def __init__(self, vocab, merges, special_tokens=None):
-        self.decoder_vocab=vocab # token ID to bytes
-        self.encoder_trie_root = TrieNode() # bytes to [token]
-        self.special_tokens = special_tokens
-
-        # add first 256 items to root
-        for k, v in list(self.decoder_vocab.items())[:256]:
-            insert(self.encoder_trie_root, v, k)
+        self.id2byte = vocab # token ID to bytes
+        self.byte2id = {v: k for k, v in vocab.items()}
+        self.encoder_mergeranks={}
+        self.special_tokens = None
         
-        for merge in merges:
-            new_token = self.encoder_trie_root.size
-            new_bytestr = merge[0] + merge[1]
-            insert(self.encoder_trie_root, new_bytestr, new_token)
-        
-        # a hacky way to use the trie
-        for k, v in list(self.decoder_vocab.items())[256+len(merges):]:
-            insert(self.encoder_trie_root, v, k)
-
         if (special_tokens != None):
-            for special_token in special_tokens:
-                new_token = self.encoder_trie_root.size
-                new_bytestr = special_token.encode("utf-8")
-                insert(self.encoder_trie_root, new_bytestr, new_token)
+            self.id2special = {}
+            self.special_tokens = special_tokens
+            enum = len(vocab) + 20
+            for special_token in self.special_tokens:
+                self.id2special[enum] = special_token
+                enum += 1
+            self.special2id = {v: k for k, v in self.id2special.items()}
 
-        # verifying, we can find every vocabulary pair from the trie:
-        # for k, v in self.decoder_vocab.items():
-        #     # print("PEILIN", k, v, find(self.encoder_trie_root, v)[0])
-        #     assert k == find(self.encoder_trie_root, v)[0]
+        rank = 0
+        for merge in merges:
+            self.encoder_mergeranks[(self.byte2id[merge[0]], self.byte2id[merge[1]])] = rank
+            rank += 1
+
+
+    # simple BPE merge
+    def find(self, bytestr):
+        
+        tokens = [self.byte2id[bytes([byte])] for byte in bytestr]
+        while True:
+            best_rank = math.inf
+            best_pos = None
+
+            for i in range(len(tokens)-1):
+                pair = (tokens[i], tokens[i+1])
+                if pair in self.encoder_mergeranks and self.encoder_mergeranks[pair] < best_rank:
+                    best_rank = self.encoder_mergeranks[pair]
+                    best_pos = i
+
+            if best_pos is None:
+                break
+
+            merged = self.byte2id[self.id2byte[tokens[best_pos]] + self.id2byte[tokens[best_pos + 1]]]  # bytes concat ✅
+            tokens = tokens[:best_pos] + [merged] + tokens[best_pos + 2:]
+
+        return tokens
 
 
     @classmethod
@@ -288,15 +306,21 @@ class Tokenizer:
     def encode(self, text: str) -> list[int]:
         result = []
         # Run pre-tokenization on your input
-        if (self.special_tokens):
+        if (self.special_tokens != None):
             self.special_tokens = sorted(self.special_tokens, key=len, reverse=True)
             PAT_NOSPECIAL = "(" + "|".join(map(re.escape, self.special_tokens)) + ")"
             parts = re.split(PAT_NOSPECIAL, text)
             for part in parts:
-                result.extend(find(self.encoder_trie_root, part.encode("utf-8")))
+                if (part in self.special_tokens):
+                    result.append(self.byte2id[part.encode("utf-8")])
+                else:
+                    for m in re.finditer(PAT, part):
+                        merged_bytes = self.find(m.group().encode("utf-8"))
+                        result.extend(merged_bytes)
         else:
             for m in re.finditer(PAT, text):
-                result.extend(find(self.encoder_trie_root, m.group().encode("utf-8")))
+                merged_bytes = self.find(m.group().encode("utf-8"))
+                result.extend(merged_bytes)
         return result
         
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -308,8 +332,15 @@ class Tokenizer:
     def decode(self, ids: list[int]) -> str:
         result = []
         for id in ids:
-            result.append(self.decoder_vocab[id])
-        return b"".join(result).decode("utf-8", errors="replace")
+            if (self.special_tokens != None):
+                if id in self.id2special:
+                    result.append(self.id2special[id].encode("utf-8"))
+                else:
+                    result.append(self.id2byte[id])
+            else:
+                result.append(self.id2byte[id])
+        ret = b"".join(result).decode("utf-8", errors="replace")
+        return ret
 
 def main():
     """Main entry point of the program."""

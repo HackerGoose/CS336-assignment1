@@ -163,3 +163,4 @@ cython_debug/
 *.zip
 cs336_basics/data/TinyStoriesV2-GPT4-train.txt
 cs336_basics/data/TinyStoriesV2-GPT4-valid.txt
+out

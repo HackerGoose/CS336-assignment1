@@ -350,6 +350,7 @@ def main():
     # token_id_to_bytes, merges = train_bpe("cs336_basics/data/TinyStoriesV2-GPT4-valid.txt", 500, special_tokens)
 
     test_string = "Héllò hôw are ü? 🙃"
+    print(test_string)
 
 if __name__ == "__main__":
     main()

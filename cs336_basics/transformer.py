@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch
 import math
 
-class LinearModel(nn.Module):
+class LinearModule(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
         # in_features: int final dimension of the input
         # out_features: int final dimension of the output
@@ -20,7 +20,7 @@ class LinearModel(nn.Module):
 # an embedding layer that maps integer token IDs into a vector space of dimension d_model
 # it is just a look up, num_embeddings is all the possible tokenIDs, and embedding_dim is just what this tokenID is
 # mapped to 
-class EmbeddingModel(nn.Module):
+class EmbeddingModule(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
         # num_embeddings: int Size of the vocabulary
         # embedding_dim: int Dimension of the embedding vectors, i.e., dmodel
@@ -52,6 +52,38 @@ class RMSNormModule(nn.Module):
         rms = torch.sqrt(x.pow(2).sum(dim=-1, keepdim=True) / x.shape[-1] + self.eps)
         result = x/rms * self.g
         return result.to(in_dtype)
+
+# positionwise_feedforward
+class FFNModule(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
+        super().__init__()
+        self.w1_weight = nn.Parameter(torch.ones(d_ff, d_model, dtype=dtype))
+        self.w2_weight = nn.Parameter(torch.ones(d_model, d_ff, dtype=dtype))
+        self.w3_weight = nn.Parameter(torch.ones(d_ff, d_model, dtype=dtype))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        a = torch.sigmoid(x @ self.w1_weight.T) * (x @ self.w1_weight.T)
+        b = x @ self.w3_weight.T
+        h = a * b
+        result = h @ self.w2_weight.T
+        return result
+
+
+# Relative Positional Embeddings 
+# Construct the RoPE module and create buffers if needed.
+class RoPEModule(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None) 
+        # theta: float theta value for the RoPE
+        # d_k: int dimension of query and key vectors
+        # max_seq_len: int Maximum sequence length that will be inputted
+        # device: torch.device | None = None Device to store the buffer on
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        a = torch.sigmoid(x @ self.w1_weight.T) * (x @ self.w1_weight.T)
+        b = x @ self.w3_weight.T
+        h = a * b
+        result = h @ self.w2_weight.T
+        return result
 
 def main():
     """Main entry point of the program."""

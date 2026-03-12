@@ -10,7 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from cs336_basics.bpe import train_bpe, Tokenizer
-from cs336_basics.transformer import LinearModel, EmbeddingModel, RMSNormModule
+from cs336_basics.transformer import LinearModule, EmbeddingModule, RMSNormModule, FFNModule
 
 
 def run_linear(
@@ -32,7 +32,7 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    m = LinearModel(d_in, d_out)
+    m = LinearModule(d_in, d_out)
     mydict = dict()
     mydict["weight"] = weights
     m.load_state_dict(mydict)
@@ -58,7 +58,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    m = EmbeddingModel(vocab_size, d_model)
+    m = EmbeddingModule(vocab_size, d_model)
     mydict = dict()
     mydict["weight"] = weights
     m.load_state_dict(mydict)
@@ -94,7 +94,14 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+
+    m = FFNModule(d_model, d_ff)
+    mydict = dict()
+    mydict["w1_weight"] = w1_weight
+    mydict["w2_weight"] = w2_weight
+    mydict["w3_weight"] = w3_weight
+    m.load_state_dict(mydict)
+    return m.forward(in_features)
 
 
 def run_scaled_dot_product_attention(

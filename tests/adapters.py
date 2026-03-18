@@ -11,7 +11,8 @@ from torch import Tensor
 
 from cs336_basics.bpe import train_bpe, Tokenizer
 from cs336_basics.transformer import LinearModule, EmbeddingModule,  \
-    RMSNormModule, FFNModule, RoPEModule, softmax, scaled_dot_product_attention\
+  RMSNormModule, FFNModule, RoPEModule, softmax, scaled_dot_product_attention,\
+  MultiheadSelfAttentionModule, transformer_block
 
 
 def run_linear(
@@ -146,7 +147,6 @@ def run_multihead_self_attention(
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
-        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
         k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
         v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
@@ -157,7 +157,15 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    
+    m = MultiheadSelfAttentionModule(d_model, num_heads)
+    mydict = dict()
+    mydict["q_proj_weight"] = q_proj_weight
+    mydict["k_proj_weight"] = k_proj_weight
+    mydict["v_proj_weight"] = v_proj_weight
+    mydict["o_proj_weight"] = o_proj_weight
+    m.load_state_dict(mydict)
+    return m.forward(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -197,7 +205,15 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+
+    m = MultiheadSelfAttentionModule(d_model, num_heads, max_seq_len, theta)
+    mydict = dict()
+    mydict["q_proj_weight"] = q_proj_weight
+    mydict["k_proj_weight"] = k_proj_weight
+    mydict["v_proj_weight"] = v_proj_weight
+    mydict["o_proj_weight"] = o_proj_weight
+    m.load_state_dict(mydict)
+    return m.forward(in_features, token_positions)
 
 
 def run_rope(
@@ -293,8 +309,7 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
-
+    return transformer_block(d_model, num_heads, d_ff, max_seq_len, theta, weights, in_features)
 
 def run_transformer_lm(
     vocab_size: int,

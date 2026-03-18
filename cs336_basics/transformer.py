@@ -2,6 +2,9 @@
 import torch.nn as nn
 import torch
 import math
+from typing import IO, Any, BinaryIO
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 
 class LinearModule(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -78,14 +81,13 @@ class RoPEModule(nn.Module):
         # d_k: int dimension of query and key vectors
         # max_seq_len: int Maximum sequence length that will be inputted
         # device: torch.device | None = None Device to store the buffer on
-        cos_i_k_map = torch.zeros(max_seq_len, int(d_k/2))
-        sin_i_k_map = torch.zeros(max_seq_len, int(d_k/2))
-        for i in range(max_seq_len):
+        cos_i_k_map = torch.zeros(int(max_seq_len), int(d_k/2))
+        sin_i_k_map = torch.zeros(int(max_seq_len), int(d_k/2))
+        for i in range(int(max_seq_len)):
             for k in range(int(d_k/2)):
                 t = i / (theta ** ((2*k)/d_k))
                 cos_i_k_map[i][k] = math.cos(t)
                 sin_i_k_map[i][k] = math.sin(t)
-
 
         # sin_table : (max_seq_len, d_k/2)
         # cos_table : (max_seq_len, d_k/2)
@@ -114,7 +116,7 @@ class RoPEModule(nn.Module):
         # sin = torch.broadcast_to(sin, x_odd.shape)
         # it is auto broadcosted
 
-        # calculate and do the roation
+        # calculate and do the rotation
         x_rot_even = x_even * cos - x_odd * sin
         x_rot_odd  = x_even * sin + x_odd * cos 
 
@@ -144,7 +146,6 @@ def softmax(x, dim: int):
 
 
 # Scaled Dot-Product Attention
-# Construct the RoPE module and create buffers if needed.
 def scaled_dot_product_attention(Q, K, V, mask):
     # Args:
     #     Q (Float[Tensor, " ... queries d_k"]): Query tensor
@@ -158,6 +159,85 @@ def scaled_dot_product_attention(Q, K, V, mask):
     pre_softmax = pre_softmax.masked_fill(~mask, float('-inf'))
     return softmax(pre_softmax, dim=-1) @ V
 
+class MultiheadSelfAttentionModule(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, max_seq_len=10, theta=10.0, device=None):
+        super().__init__()
+        # d_model (int): Dimensionality of the feedforward input and output.
+        # num_heads (int): Number of heads to use in multi-headed attention.
+        # max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
+        # q_proj_weight (Float[Tensor, "d_k d_model"]): Weights for the Q projection
+        # k_proj_weight (Float[Tensor, "d_k d_model"]): Weights for the K projection
+        # v_proj_weight (Float[Tensor, "d_k d_model"]): Weights for the V projection
+        # o_proj_weight (Float[Tensor, "d_model d_v"]): Weights for the output projection
+        # in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = int(d_model/num_heads) # d_k = d_v = d_model/num_heads
+        self.q_proj_weight = nn.Parameter(torch.zeros(self.num_heads * self.d_k, self.d_model))
+        self.k_proj_weight = nn.Parameter(torch.zeros(self.num_heads * self.d_k, self.d_model))
+        self.v_proj_weight = nn.Parameter(torch.zeros(self.num_heads * self.d_k, self.d_model))
+        self.o_proj_weight = nn.Parameter(torch.zeros(self.d_model, self.num_heads * self.d_k))
+        self.max_seq_len = max_seq_len
+        self.theta = theta
+        self.rope = RoPEModule(self.theta, self.d_k, self.max_seq_len)
+               
+    def forward(self, in_features: torch.Tensor, token_positions=None) -> torch.Tensor:
+        Q = (in_features @ self.q_proj_weight.T).unflatten(-1, (self.num_heads, self.d_k)).transpose(-2, -3)
+        K = (in_features @ self.k_proj_weight.T).unflatten(-1, (self.num_heads, self.d_k)).transpose(-2, -3)
+
+        if (token_positions is not None):
+            Q = self.rope.forward(Q, token_positions)
+            K = self.rope.forward(K, token_positions)
+
+        V = (in_features @ self.v_proj_weight.T).unflatten(-1, (self.num_heads, self.d_k)).transpose(-2, -3)
+        seq_len = in_features.shape[-2]
+        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool))
+        # Every token (row) can look at itself and everyone before
+        # [
+        #  [ True, False, False, False],
+        #  [ True,  True, False, False],
+        #  [ True,  True,  True, False],
+        #  [ True,  True,  True,  True],
+        # ]
+        attention = scaled_dot_product_attention(Q, K, V, mask)
+        attention = attention.transpose(-2, -3)
+        attention = attention.reshape(*attention.shape[:-2], -1)
+
+        return attention @ self.o_proj_weight.T
+
+def transformer_block( d_model: int,
+    num_heads: int,
+    d_ff: int,
+    max_seq_len: int,
+    theta: float,
+    weights: dict[str, Tensor],
+    in_features: Float[Tensor, " batch sequence_length d_model"]
+) -> Float[Tensor, " batch sequence_length d_model"]:
+    # d_model (int): Dimensionality of the feedforward input and output.
+    # num_heads (int): Number of heads to use in multi-headed attention.
+    # d_ff (int): Dimensionality of the feedforward hidden layer.
+    # max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
+    # theta (float): Theta value for RoPE
+    # weights (dict[str, Tensor]): Dictionary containing all the weights you need for this block. The keys should be:
+    #     "q_proj_weight", "k_proj_weight", "v_proj_weight", "o_proj_weight", "w1_weight", "w2_weight", "w3_weight"
+    # in_features (Float[Tensor, " batch sequence_length d_model"]): Tensor to run your implementation on.
+
+    attn_module = MultiheadSelfAttentionModule(d_model, num_heads, max_seq_len, theta)
+    attn_module.q_proj_weight.data.copy_(weights["attn.q_proj.weight"])
+    attn_module.k_proj_weight.data.copy_(weights["attn.k_proj.weight"])
+    attn_module.v_proj_weight.data.copy_(weights["attn.v_proj.weight"])
+    attn_module.o_proj_weight.data.copy_(weights["attn.output_proj.weight"])
+
+    ffn_module = FFNModule(d_model, d_ff)
+    ffn_module.w1_weight.data.copy_(weights["ffn.w1.weight"])
+    ffn_module.w2_weight.data.copy_(weights["ffn.w2.weight"])
+    ffn_module.w3_weight.data.copy_(weights["ffn.w3.weight"])
+
+    x =
+    x = attn_module(in_features)
+    x = x + in_features
+    x = ffn_module(x) + x
+    return x
 
 def main():
     """Main entry point of the program."""

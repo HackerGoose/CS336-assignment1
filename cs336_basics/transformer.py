@@ -233,10 +233,13 @@ def transformer_block( d_model: int,
     ffn_module.w2_weight.data.copy_(weights["ffn.w2.weight"])
     ffn_module.w3_weight.data.copy_(weights["ffn.w3.weight"])
 
-    x =
-    x = attn_module(in_features)
+    ln_module1 = RMSNormModule(d_model)
+
+    x = LinearModule(d_model, d_model)(in_features)
+    x = RMSNormModule(d_model)(in_features)
+    x = attn_module(x)
     x = x + in_features
-    x = ffn_module(x) + x
+    x = ffn_module.forward(x) + x
     return x
 
 def main():

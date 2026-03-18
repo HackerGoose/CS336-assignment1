@@ -51,7 +51,6 @@ class RMSNormModule(nn.Module):
         # Process an input tensor of shape (batch_size, sequence_length, d_model) and return a tensor of the same shape.
         in_dtype = x.dtype
         x = x.to(torch.float32)
-        
         rms = torch.sqrt(x.pow(2).sum(dim=-1, keepdim=True) / x.shape[-1] + self.eps)
         result = x/rms * self.g
         return result.to(in_dtype)
@@ -222,6 +221,10 @@ def transformer_block( d_model: int,
     #     "q_proj_weight", "k_proj_weight", "v_proj_weight", "o_proj_weight", "w1_weight", "w2_weight", "w3_weight"
     # in_features (Float[Tensor, " batch sequence_length d_model"]): Tensor to run your implementation on.
 
+    # construct an one-dimensional array [0, 1, 2, 3, 4, ..., sequence_length]
+    # auto broadcast to any dimension
+    token_positions = torch.arange(in_features.shape[-2])
+
     attn_module = MultiheadSelfAttentionModule(d_model, num_heads, max_seq_len, theta)
     attn_module.q_proj_weight.data.copy_(weights["attn.q_proj.weight"])
     attn_module.k_proj_weight.data.copy_(weights["attn.k_proj.weight"])
@@ -233,13 +236,69 @@ def transformer_block( d_model: int,
     ffn_module.w2_weight.data.copy_(weights["ffn.w2.weight"])
     ffn_module.w3_weight.data.copy_(weights["ffn.w3.weight"])
 
-    ln_module1 = RMSNormModule(d_model)
+    rms_norm_module1 = RMSNormModule(d_model)
+    rms_norm_module1.g.data.copy_(weights["ln1.weight"])
+    rms_norm_module2 = RMSNormModule(d_model)
+    rms_norm_module2.g.data.copy_(weights["ln2.weight"])
 
-    x = LinearModule(d_model, d_model)(in_features)
-    x = RMSNormModule(d_model)(in_features)
-    x = attn_module(x)
-    x = x + in_features
-    x = ffn_module.forward(x) + x
+    x = rms_norm_module1(in_features)
+    x_first_half = attn_module(x, token_positions) + in_features
+
+    x = rms_norm_module2(x_first_half)
+    x = ffn_module(x) + x_first_half
+    
+    return x
+
+
+# The real Transformer language model
+def transformer_lm(
+    vocab_size: int,
+    context_length: int,
+    d_model: int,
+    num_layers: int,
+    num_heads: int,
+    d_ff: int,
+    rope_theta: float,
+    weights: dict[str, Tensor],
+    in_indices: Int[Tensor, " batch_size sequence_length"],
+) -> Float[Tensor, " batch_size sequence_length vocab_size"]:
+
+    # first, embedding
+    embedding_model = EmbeddingModule(vocab_size, d_model, dtype=torch.float32)
+    embedding_model.weight.data.copy_(weights["token_embeddings.weight"])
+    x = embedding_model(in_indices)
+
+    for i in range(num_layers):
+        layer_weights = dict()
+        key = "layers."+ str(i) +".attn.q_proj.weight"
+        layer_weights["attn.q_proj.weight"] = weights[key]
+        key = "layers."+ str(i) +".attn.k_proj.weight"
+        layer_weights["attn.k_proj.weight"] = weights[key]
+        key = "layers."+ str(i) +".attn.v_proj.weight"
+        layer_weights["attn.v_proj.weight"] = weights[key]
+        key = "layers."+ str(i) +".attn.output_proj.weight"
+        layer_weights["attn.output_proj.weight"] = weights[key]
+        key = "layers."+ str(i) +".ffn.w1.weight"
+        layer_weights["ffn.w1.weight"] = weights[key]
+        key = "layers."+ str(i) +".ffn.w2.weight"
+        layer_weights["ffn.w2.weight"] = weights[key]
+        key = "layers."+ str(i) +".ffn.w3.weight"
+        layer_weights["ffn.w3.weight"] = weights[key]
+        key = "layers."+ str(i) +".ln1.weight"
+        layer_weights["ln1.weight"] = weights[key]
+        key = "layers."+ str(i) +".ln2.weight"
+        layer_weights["ln2.weight"] = weights[key]
+
+        x = transformer_block(d_model, num_heads, d_ff, context_length, rope_theta, layer_weights, x)
+
+    rms_norm_module_final = RMSNormModule(d_model)
+    rms_norm_module_final.g.data.copy_(weights["ln_final.weight"])
+    x = rms_norm_module_final(x)
+
+    linear_output = LinearModule(d_model, vocab_size)
+    linear_output.weight.data.copy_(weights["lm_head.weight"])
+    x = linear_output(x)
+
     return x
 
 def main():
